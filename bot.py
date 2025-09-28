@@ -104,7 +104,6 @@ async def save_image(user_id, image_bytes, prompt):
         row = await cur.fetchone()
         seq = (row[0] or 0) + 1
         filename = f"{user_id}_{seq}_{int(datetime.datetime.utcnow().timestamp())}.png"
-        # Upload to Supabase
         supabase.storage.from_(SUPABASE_BUCKET).upload(filename, io.BytesIO(image_bytes), {"content-type":"image/png"})
         await db.execute("INSERT INTO images(user_id,user_seq,filename,prompt,created_at) VALUES(?,?,?,?,?)",
                          (user_id, seq, filename, prompt[:400], datetime.datetime.utcnow().isoformat()))
