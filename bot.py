@@ -13,23 +13,24 @@ from supabase import create_client
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("nanobanana-bot")
 
-# ------------------ Config from env ------------------
+# ------------------ Config ------------------
 DISCORD_BOT_TOKEN = os.environ["DISCORD_BOT_TOKEN"]
-NANOBANANA_API_URL = os.environ.get("NANOBANANA_API_URL","https://nanobananafree.ai")
+HUGGINGFACE_API_KEY = os.environ["HUGGINGFACE_API_KEY"]
+HUGGINGFACE_MODEL = os.environ.get("HUGGINGFACE_MODEL","naviernan/nano-banana")
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_KEY"]
 SUPABASE_BUCKET = os.environ.get("SUPABASE_BUCKET","images")
 MAX_PER_USER_PER_DAY = int(os.environ.get("MAX_PER_USER_PER_DAY",9999))
 GLOBAL_MONTHLY_LIMIT = int(os.environ.get("GLOBAL_MONTHLY_LIMIT",9999))
 
-# ------------------ Supabase client ------------------
+# ------------------ Supabase ------------------
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # ------------------ Discord bot ------------------
 intents = Intents.default()
 bot = commands.Bot(command_prefix="/", intents=intents)
 
-# ------------------ Database helpers ------------------
+# ------------------ Database ------------------
 DB_PATH = "./bot.db"
 
 async def init_db():
@@ -120,26 +121,17 @@ async def get_image_by_seq(user_id, seq):
         res = supabase.storage.from_(SUPABASE_BUCKET).download(filename)
         return res, prompt
 
-# ------------------ NanoBanana API ------------------
-async def nanobanana_generate(prompt):
+# ------------------ Hugging Face API ------------------
+async def hf_generate(prompt):
     async with aiohttp.ClientSession() as session:
-        payload = {"prompt": prompt}
-        async with session.post(f"{NANOBANANA_API_URL}/generate", json=payload) as resp:
+        headers = {"Authorization": f"Bearer {HUGGINGFACE_API_KEY}"}
+        payload = {"inputs": prompt}
+        async with session.post(f"https://api-inference.huggingface.co/models/{HUGGINGFACE_MODEL}", headers=headers, json=payload) as resp:
             if resp.status == 200:
-                return await resp.read()
+                data = await resp.read()
+                return data
             text = await resp.text()
-            raise RuntimeError(f"NanoBanana generate failed {resp.status}: {text}")
-
-async def nanobanana_edit(image_bytes, prompt):
-    async with aiohttp.ClientSession() as session:
-        form = aiohttp.FormData()
-        form.add_field("prompt", prompt)
-        form.add_field("image", image_bytes, filename="input.png", content_type="image/png")
-        async with session.post(f"{NANOBANANA_API_URL}/edit", data=form) as resp:
-            if resp.status == 200:
-                return await resp.read()
-            text = await resp.text()
-            raise RuntimeError(f"NanoBanana edit failed {resp.status}: {text}")
+            raise RuntimeError(f"HuggingFace generate failed {resp.status}: {text}")
 
 # ------------------ Bot events ------------------
 @bot.event
@@ -165,7 +157,7 @@ async def weekly_cleanup():
         log.info("Weekly cleanup finished.")
 
 # ------------------ Slash commands ------------------
-@app_commands.command(name="generate", description="Generate an image with NanoBanana")
+@app_commands.command(name="generate", description="Generate an image")
 @app_commands.describe(prompt="Describe the image")
 async def generate(interaction, prompt: str):
     uid = str(interaction.user.id)
@@ -177,7 +169,7 @@ async def generate(interaction, prompt: str):
         return
     await interaction.response.send_message(f"Generating image for your prompt: `{prompt}`", ephemeral=True)
     try:
-        img_bytes = await nanobanana_generate(prompt)
+        img_bytes = await hf_generate(prompt)
         seq, filename = await save_image(uid, img_bytes, prompt)
         await increment_user_usage(uid)
         await increment_global_usage()
@@ -187,43 +179,6 @@ async def generate(interaction, prompt: str):
     except Exception as e:
         await interaction.followup.send(f"Generation failed: {e}", ephemeral=True)
 
-@app_commands.command(name="edit", description="Edit one of your images")
-@app_commands.describe(id="Image ID", prompt="Edit prompt")
-async def edit(interaction, id: int, prompt: str):
-    uid = str(interaction.user.id)
-    if await get_user_usage(uid) >= MAX_PER_USER_PER_DAY:
-        await interaction.response.send_message(f"You reached daily limit ({MAX_PER_USER_PER_DAY})", ephemeral=True)
-        return
-    data = await get_image_by_seq(uid, id)
-    if not data:
-        await interaction.response.send_message(f"Image #{id} not found", ephemeral=True)
-        return
-    await interaction.response.send_message(f"Editing image #{id} with your prompt: `{prompt}`", ephemeral=True)
-    try:
-        out_bytes = await nanobanana_edit(data[0], prompt)
-        seq, filename = await save_image(uid, out_bytes, prompt)
-        await increment_user_usage(uid)
-        await increment_global_usage()
-        bio = io.BytesIO(out_bytes)
-        bio.seek(0)
-        await interaction.followup.send(file=File(bio, filename=f"edit_{seq}.png"))
-    except Exception as e:
-        await interaction.followup.send(f"Edit failed: {e}", ephemeral=True)
-
-@app_commands.command(name="myimages", description="List your images")
-async def myimages(interaction):
-    uid = str(interaction.user.id)
-    async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute("SELECT user_seq,prompt,created_at FROM images WHERE user_id=? ORDER BY user_seq", (uid,))
-        rows = await cur.fetchall()
-    if not rows:
-        await interaction.response.send_message("No images yet.", ephemeral=True)
-        return
-    lines = [f"#{r[0]} — {r[2]} — {r[1][:50]}" for r in rows]
-    await interaction.response.send_message("\n".join(lines), ephemeral=True)
-
 bot.tree.add_command(generate)
-bot.tree.add_command(edit)
-bot.tree.add_command(myimages)
 
 bot.run(DISCORD_BOT_TOKEN)
