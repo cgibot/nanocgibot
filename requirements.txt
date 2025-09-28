@@ -1,0 +1,6 @@
+discord.py>=2.3.2
+aiohttp
+aiosqlite
+python-dotenv
+Pillow
+supabase
