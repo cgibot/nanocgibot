@@ -1,6 +1,3 @@
-discord.py>=2.3.2
-aiohttp
-aiosqlite
-python-dotenv
-Pillow
-supabase
+discord.py==2.3.2
+aiohttp==3.9.1
+sqlite3
